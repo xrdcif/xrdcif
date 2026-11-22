@@ -1,6 +1,6 @@
 ---
 name: xrd-cif-retrieval
-description: Cross-modal XRD-CIF crystal retrieval Skill. Trigger when the user asks for XRD phase identification, powder diffraction (pXRD) peak interpretation, matching a diffraction pattern to candidate crystal structures, reverse lookup from a CIF structure to its theoretical XRD pattern, checking SUPPORT/CONTRADICT/INSUFFICIENT three-state physical-rule verification evidence, or checking the daily free quota, account balance, and credit purchase link. Uses scripts/xrd_client.py to call the remote retrieval service, returning Top-K candidate structures with traceable evidence, and clearly printing the purchase link and remaining quota when the free allowance is exhausted.
+description: Cross-modal XRD-CIF crystal retrieval Skill. Trigger when the user asks for XRD phase identification, powder diffraction (pXRD) peak interpretation, matching a diffraction pattern to candidate crystal structures, reverse lookup from a CIF structure to its theoretical XRD pattern, checking SUPPORT/CONTRADICT/INSUFFICIENT three-state physical-rule verification evidence, or checking the daily free quota, account balance, and credit purchase link. Uses scripts/xrd_client.py to call the remote retrieval service, returning Top-K candidate structures with traceable evidence, and clearly printing the purchase link and remaining quota when the free allowance is exhausted. Chinese trigger keywords: 鉴定XRD谱、解释衍射峰位、匹配晶体结构、CIF反查理论衍射谱、查剩余额度.
 agent_created: true
 ---
 
