@@ -1,65 +1,63 @@
 ---
 name: xrd-cif-retrieval
-description: XRD 与 CIF 跨模态晶体检索 Skill，应在用户提出 XRD 物相鉴定、粉末衍射谱 pXRD 峰位解释、衍射谱匹配候选晶体结构、由 CIF 结构反查理论衍射谱、要求核对 SUPPORT/CONTRADICT/INSUFFICIENT 三态物理规则复核证据，或查询每日免费额度与账户余额及购买额度时触发；借助 scripts/xrd_client.py 调用远程检索服务，返回 Top-K 候选结构与可追溯证据，并在免费额度用尽时清晰输出购买链接与剩余额度。
+description: Cross-modal XRD-CIF crystal retrieval Skill. Trigger when the user asks for XRD phase identification, powder diffraction (pXRD) peak interpretation, matching a diffraction pattern to candidate crystal structures, reverse lookup from a CIF structure to its theoretical XRD pattern, checking SUPPORT/CONTRADICT/INSUFFICIENT three-state physical-rule verification evidence, or checking the daily free quota, account balance, and credit purchase link. Uses scripts/xrd_client.py to call the remote retrieval service, returning Top-K candidate structures with traceable evidence, and clearly printing the purchase link and remaining quota when the free allowance is exhausted.
 agent_created: true
 ---
 
-# XRD-CIF 跨模态晶体检索
+# XRD-CIF Cross-Modal Crystal Retrieval
 
-## 概述
+## Overview
 
-封装远程 XRD-CIF 跨模态检索服务：输入 X 射线衍射谱，返回 Top-K 候选晶体结构，并经教材抽取的物理规则做独立三态复核（SUPPORT / CONTRADICT / INSUFFICIENT），输出可追溯证据。全部能力通过 `scripts/xrd_client.py` 以命令行方式调用。服务按解析次数（credits）计费，每账户每日有免费额度，用尽后须到网站购买。
+Wraps a remote XRD-CIF cross-modal retrieval service: feed in an X-ray diffraction pattern, get back Top-K candidate crystal structures, each independently cross-checked by textbook-derived physical rules into a three-state verdict (`SUPPORT` / `CONTRADICT` / `INSUFFICIENT`), with traceable evidence. All capabilities are exposed through `scripts/xrd_client.py` on the command line. The service charges per analysis (credits); each account has a daily free allowance, and additional credits must be purchased on the website once the allowance is exhausted.
 
-## 触发时机
+## When to use
 
-在下列请求出现时启用本 Skill：
+- Phase identification or peak interpretation from an XRD / pXRD pattern.
+- Matching a diffraction pattern to candidate crystal structures; requesting a Top-K candidate list.
+- Reverse lookup: theoretical XRD pattern from a CIF structure.
+- Inspecting the three-state verdicts and per-candidate `verification` / `render` evidence.
+- Checking the daily free quota, balance, ledger, or the credit purchase entry.
 
-- 依据 XRD / pXRD 衍射谱做物相鉴定或峰位解释；
-- 将衍射谱匹配到候选晶体结构、索取 Top-K 候选清单；
-- 由 CIF 结构反查理论衍射谱并核对命中；
-- 查看三态复核结论与每个候选的 verification / render 证据；
-- 查询每日免费额度、账户余额、账本流水或购买额度入口。
+## Configuration
 
-## 配置
+Read the service base URL and credentials in this priority order; never write the API key into logs, command echoes, or output.
 
-按以下优先级读取服务地址与凭据；勿将 API Key 写入日志、命令回显或输出：
+- Base URL: environment variable `XRD_API_BASE`, default `https://xrdcif.com` (public service; override for local development).
+- API key: environment variable `XRD_API_KEY`, or `api_key` / `api_base` in `~/.config/xrd-cif/config.json`.
+- Language: environment variable `XRD_LANG`, default `en`, sent as the `X-Lang` header on every request.
 
-- 基址：环境变量 `XRD_API_BASE`，默认 `https://xrdcif.com`（公开服务，本地开发可用环境变量覆盖）；
-- API Key：环境变量 `XRD_API_KEY`，或 `~/.config/xrd-cif/config.json` 中的 `api_key` / `api_base`；
-- 语言：环境变量 `XRD_LANG`，默认 `en`，随每次请求写入 `X-Lang` 头。
+To obtain an API key: open `https://xrdcif.com`, register, confirm your email, then generate a key under **Account & Credits → Developer** and set it in `XRD_API_KEY` or the config file. With no key, run `doctor` first — the client self-checks connectivity and prints registration guidance; a 401 response includes the same guidance. The purchase link is returned by the server in `quota` and in 402 responses; never hard-code it in the client.
 
-获取 API Key：打开 `https://xrdcif.com` 注册 → 确认邮箱 → 进入「账户与额度 / 开发者」栏目生成 API Key → 写入环境变量 `XRD_API_KEY` 或配置文件。无 Key 时先执行 `doctor`，客户端会自检连通性并打印注册引导；401 响应同样附带引导。购买链接由服务端 `quota` 与 402 响应返回，勿在客户端写死。
+## Workflow
 
-## 工作流
+1. Run `python scripts/xrd_client.py doctor` to check connectivity and key validity. If no key is configured, the client prints registration guidance (site URL and key-generation steps) — present that guidance to the user as-is. Do not register on the user's behalf and never fabricate a key.
+2. With a key, run `python scripts/xrd_client.py quota` to read the remaining daily free allowance, balance, and purchase link.
+3. Build the pattern and run `search`: `simulate` uses a built-in demo structure, `peaks` reads a 2θ / relative-intensity peak table, `xy` reads a continuous pattern. Use `--k` for the candidate count and `--request-id` with a UUID for idempotency.
+4. For per-candidate evidence, run `history` to read the `verification` and `render` traces; for structure reverse lookup, run `reverse`.
+5. To inspect account details, run `account`.
+6. On HTTP 402 (free allowance and balance both exhausted), print the server-provided purchase link and remaining quota verbatim and stop the retrieval. Never fail silently and never fabricate or cache results. Never fabricate results.
 
-1. 执行 `python scripts/xrd_client.py doctor` 自检连通性与 Key 有效性。若未配置 Key，客户端会打印注册引导（含网站地址与生成 Key 步骤）——此时应把引导如实呈现给用户，不得代替用户注册、不得伪造 Key。
-2. 有 Key 后执行 `python scripts/xrd_client.py quota` 读取当日免费剩余额度、余额与购买链接。
-3. 构造衍射谱并执行 `search`：`simulate` 使用内置演示结构，`peaks` 读取 2θ 与相对强度峰表，`xy` 读取连续谱；用 `--k` 指定候选数，`--request-id` 传入 UUID 以保证幂等。
-4. 需要逐候选证据时执行 `history` 读取 verification 与 render 文本；需要结构反查时执行 `reverse`。
-5. 检查账户明细时执行 `account`。
-6. 遇到 HTTP 402（免费额度与余额均耗尽）时，须原样打印响应中的购买链接与剩余额度，停止本次检索；绝不静默失败，绝不伪造或缓存结果。Never fabricate results.
+## Command reference
 
-## 命令速查
-
-| 子命令 | 用途 | 主要参数 |
+| Command | Purpose | Main options |
 | --- | --- | --- |
-| `doctor` | 自检连通性与 Key | `--json` `--timeout` |
-| `quota` | 当日免费额度与余额 | `--json` `--timeout` |
-| `search` | 衍射谱检索 Top-K | `--pattern-kind` `--structure-id` `--condition` `--peaks-file` `--xy-file` `--k` `--request-id` `--json` |
-| `reverse` | CIF 反查理论谱 | `--structure-id` `--k` `--json` |
-| `history` | 完整结果与证据 | `--history-id` `--json` |
-| `account` | 账户与账本流水 | `--json` |
+| `doctor` | Check connectivity and key | `--json` `--timeout` |
+| `quota` | Daily free allowance and balance | `--json` `--timeout` |
+| `search` | Pattern → Top-K candidates | `--pattern-kind` `--structure-id` `--condition` `--peaks-file` `--xy-file` `--k` `--request-id` `--json` |
+| `reverse` | CIF → theoretical pattern | `--structure-id` `--k` `--json` |
+| `history` | Full result and evidence | `--history-id` `--json` |
+| `account` | Account and ledger | `--json` |
 
-所有子命令支持 `--json` 输出原始 JSON，默认输出人类可读摘要；`--timeout` 设置显式超时秒数。完整端点、字段、错误码与计费口径见 `references/api.md`；安装、发布与购买流程见 `README.md`。
+Every subcommand supports `--json` for raw JSON; the default is a human-readable summary. `--timeout` sets an explicit timeout in seconds. See `references/api.md` for the full endpoint, field, error-code, and billing specification; see `README.md` for installation, publishing, and purchase flow.
 
-## 计费与合规边界
+## Billing and compliance boundaries
 
-- 免费额度按 UTC 日切重置，每日固定、不累积、不跨日结转；`billing.credits` 标记本次是否消耗付费额度，`quota.source` 标记来源为 `daily_free` 或 `credits`。
-- 结果内含同源自评指标，仅作检索参考与证据追溯，不得用于营销宣称准确率。Self-evaluation metrics are not accuracy claims.
-- 支付由网站侧完成（Paddle 商户密钥在服务端），本 Skill 与客户端不接触支付凭据、不写死购买链接。Payment is handled server-side; this Skill never touches payment credentials.
+- The daily free allowance resets at 00:00 UTC, is fixed per day, and does not accumulate or roll over; `billing.credits` marks whether this call consumed paid credits, and `quota.source` marks the source as `daily_free` or `credits`.
+- Results contain same-source self-evaluation metrics for retrieval reference and evidence traceability only; they must not be presented as accuracy claims. Self-evaluation metrics are not accuracy claims.
+- Payments are handled on the website side (the Paddle merchant credentials stay server-side); this Skill and the client never touch payment credentials. Payment is handled server-side; this Skill never touches payment credentials.
 
-## 资源
+## Resources
 
-- `scripts/xrd_client.py`：纯标准库命令行客户端，直接运行，零第三方依赖。
-- `references/api.md`：完整 API 契约、字段、错误码与合规声明。
-- `README.md`：安装、获取 Key、额度购买、各市场发布说明与诚实边界。
+- `scripts/xrd_client.py`: pure-standard-library CLI client, run directly, zero third-party dependencies.
+- `references/api.md`: full API contract, fields, error codes, and compliance notes.
+- `README.md`: installation, key setup, credit purchase, marketplace publishing notes, and honest boundaries.

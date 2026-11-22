@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""XRD-CIF 跨模态晶体检索服务命令行客户端。
+"""CLI client for the XRD-CIF cross-modal crystal retrieval service.
 
-仅使用 Python 标准库（urllib），无第三方依赖，可直接运行：
-    python xrd_client.py <子命令> [选项]
+Uses only the Python standard library (urllib), no third-party dependencies:
+    python xrd_client.py <command> [options]
 
-子命令：
-    quota    查询当日免费额度与账户余额
-    search   衍射谱检索 Top-K 候选结构
-    reverse  由 CIF 结构反查理论衍射谱
-    history  读取完整结果与逐候选证据
-    account  查询账户与账本流水
-    doctor   自检连通性与 API Key 是否有效
+Commands:
+    quota    Show the daily free allowance and account balance
+    search   Diffraction-pattern search for Top-K candidate structures
+    reverse  Reverse lookup from a CIF structure to its theoretical pattern
+    history  Read the full result and per-candidate evidence
+    account  Show account and ledger summary
+    doctor   Check connectivity and whether the API key is valid
 
-安全约定：API Key 只放入请求头，绝不写入标准输出、标准错误或日志。
-Never print or log the API key.
+Security rule: the API key goes only into request headers, never into stdout,
+stderr, or logs. Never print or log the API key.
 """
 
 import argparse
@@ -27,7 +27,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-# Windows 控制台默认编码可能无法输出中文，统一切换为 UTF-8。
+# Windows consoles may not handle UTF-8 output by default, so force it.
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -35,17 +35,17 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-# 默认指向公开服务（引流落点）；本地开发可用 XRD_API_BASE 或配置文件覆盖。
+# Default to the public service; override with XRD_API_BASE or the config file.
 DEFAULT_BASE = "https://xrdcif.com"
-# 注册引导页：无 Key 的陌生用户从这里获取 Key，这是引流的起点。
+# Registration page: where users without a key obtain one.
 SITE_URL = (os.environ.get("XRD_SITE_URL") or "https://xrdcif.com").rstrip("/")
-# 公开连通性探测端点（无需 Key），供 doctor 在尚无 Key 时自检使用。
+# Public connectivity probe (no key required), used by doctor before a key exists.
 HEALTH_PATH = "/api/health"
 CONFIG_PATH = Path.home() / ".config" / "xrd-cif" / "config.json"
 DEFAULT_TIMEOUT = 15.0
 MAX_DEPTH = 4
 
-# 退出码：便于外部脚本按结果分支处理。
+# Exit codes, so external scripts can branch on the result.
 EXIT_OK = 0
 EXIT_USAGE = 1
 EXIT_NETWORK = 2
@@ -59,15 +59,15 @@ EXIT_429 = 14
 
 
 class UsageError(Exception):
-    """参数或输入文件不合法。"""
+    """Invalid arguments or input file."""
 
 
 class ApiError(Exception):
-    """服务端或网络错误。
+    """Server or network error.
 
-    status: HTTP 状态码；0 表示网络或超时；-1 表示响应不是合法 JSON。
-    payload: 解析后的 JSON（可能为 None）。
-    message: 面向用户的简短说明，不含任何凭据。
+    status: HTTP status code; 0 = network/timeout; -1 = response was not valid JSON.
+    payload: parsed JSON (may be None).
+    message: short user-facing explanation, containing no credentials.
     """
 
     def __init__(self, status, payload, message):
@@ -78,11 +78,11 @@ class ApiError(Exception):
 
 
 def load_config():
-    """读取基址、API Key 与语言。
+    """Read base URL, API key, and language.
 
-    优先级：环境变量 XRD_API_BASE / XRD_API_KEY / XRD_LANG，
-    其次为 ~/.config/xrd-cif/config.json 的 api_base / api_key，
-    最后回退到默认值。返回值含 Key，但任何调用方都不得打印该值。
+    Priority: XRD_API_BASE / XRD_API_KEY / XRD_LANG environment variables,
+    then api_base / api_key in ~/.config/xrd-cif/config.json,
+    then defaults. The returned value contains the key, but no caller may print it.
     """
     api_base = os.environ.get("XRD_API_BASE")
     api_key = os.environ.get("XRD_API_KEY")
@@ -93,7 +93,7 @@ def load_config():
         try:
             cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            print(f"[警告] 配置文件不可读，已忽略：{type(exc).__name__}", file=sys.stderr)
+            print(f"[warning] Config file unreadable, ignored: {type(exc).__name__}", file=sys.stderr)
 
     if not api_base:
         api_base = cfg.get("api_base") or DEFAULT_BASE
@@ -108,7 +108,7 @@ def load_config():
 
 
 def parse_json(raw):
-    """把响应文本解析为 JSON，失败返回 None。"""
+    """Parse response text as JSON, returning None on failure."""
     if not raw or not raw.strip():
         return None
     try:
@@ -118,7 +118,7 @@ def parse_json(raw):
 
 
 def error_message(payload, status):
-    """从错误响应提取 error / type 字段，构造不含凭据的说明。"""
+    """Extract error / type from an error response, building a credential-free message."""
     if isinstance(payload, dict):
         err = payload.get("error") or payload.get("message")
         if err:
@@ -128,10 +128,10 @@ def error_message(payload, status):
 
 
 def open_url(req, timeout):
-    """打开请求；本地回环地址绕过 HTTP 代理。
+    """Open a request; bypass the HTTP proxy for loopback addresses.
 
-    默认基址为 127.0.0.1，若环境设置了 HTTP_PROXY，代理会把本地
-    请求拦成 5xx；此处对 localhost / 127.0.0.1 / ::1 强制直连。
+    The default base URL is 127.0.0.1; if HTTP_PROXY is set, the proxy turns
+    local requests into 5xx, so localhost / 127.0.0.1 / ::1 are forced direct.
     Bypass proxies for loopback hosts.
     """
     host = (urllib.parse.urlsplit(req.full_url).hostname or "").lower()
@@ -142,10 +142,11 @@ def open_url(req, timeout):
 
 
 def request(method, path, config, body, timeout):
-    """发起一次 HTTP 请求，返回解析后的 JSON。
+    """Make one HTTP request and return parsed JSON.
 
-    统一携带 X-API-Key 与 X-Lang 头；显式超时；网络错误转为友好提示。
-    API Key 只在请求头中出现，URL 与错误信息均不含凭据。
+    Always sends X-API-Key and X-Lang headers; explicit timeout; network errors
+    become friendly messages. The API key appears only in headers; neither the
+    URL nor error messages contain credentials.
     """
     url = config["api_base"] + path
     headers = {
@@ -172,20 +173,20 @@ def request(method, path, config, body, timeout):
     except urllib.error.URLError as exc:
         reason = str(getattr(exc, "reason", exc))
         if "timed out" in reason.lower() or "timeout" in reason.lower():
-            msg = f"网络超时（{timeout} 秒）：{reason}"
+            msg = f"Network timeout ({timeout} seconds): {reason}"
         else:
-            msg = f"无法连接服务 {config['api_base']}：{reason}"
+            msg = f"Cannot reach service {config['api_base']}: {reason}"
         raise ApiError(0, None, msg) from exc
     except TimeoutError as exc:
-        raise ApiError(0, None, f"网络超时（{timeout} 秒）") from exc
+        raise ApiError(0, None, f"Network timeout ({timeout} seconds)") from exc
     except OSError as exc:
-        raise ApiError(0, None, f"网络错误：{type(exc).__name__}") from exc
+        raise ApiError(0, None, f"Network error: {type(exc).__name__}") from exc
 
     payload = parse_json(raw)
     if status >= 400:
         raise ApiError(status, payload, error_message(payload, status))
     if payload is None:
-        raise ApiError(-1, None, "服务端返回空内容或非 JSON 响应")
+        raise ApiError(-1, None, "Server returned empty or non-JSON content")
     return payload
 
 
@@ -198,7 +199,7 @@ def api_post(path, body, config, timeout):
 
 
 def compact(value, limit=200):
-    """把值压成单行短文本，便于摘要展示。"""
+    """Flatten a value into a short single-line string for summaries."""
     if isinstance(value, str):
         text = value
     else:
@@ -208,7 +209,7 @@ def compact(value, limit=200):
 
 
 def walk(value, prefix, depth, lines):
-    """递归展开 JSON 为人类可读行，限制深度避免输出过长。"""
+    """Recursively expand JSON into human-readable lines, capped by depth."""
     if depth > MAX_DEPTH:
         lines.append(f"{prefix}{compact(value)}")
         return
@@ -219,7 +220,7 @@ def walk(value, prefix, depth, lines):
                 lines.append(f"{label}:")
                 walk(item, prefix + "  ", depth + 1, lines)
             elif isinstance(item, list):
-                lines.append(f"{label} ({len(item)} 项):")
+                lines.append(f"{label} ({len(item)} items):")
                 for idx, sub in enumerate(item, 1):
                     if isinstance(sub, (dict, list)):
                         lines.append(f"{prefix}  [{idx}]")
@@ -248,48 +249,48 @@ def human_lines(payload):
 def quota_lines(payload):
     data = payload if isinstance(payload, dict) else {}
     lines = [
-        "== 每日免费额度 ==",
-        f"UTC 日期：{data.get('day_utc', '?')}    套餐：{data.get('plan', '?')}",
-        f"免费额度：{data.get('free_limit', '?')}    已用：{data.get('free_used', '?')}    剩余：{data.get('free_remaining', '?')}",
-        f"账户余额：{data.get('balance', '?')} {data.get('currency', '')}",
+        "== Daily free allowance ==",
+        f"UTC date: {data.get('day_utc', '?')}    Plan: {data.get('plan', '?')}",
+        f"Allowance: {data.get('free_limit', '?')}    Used: {data.get('free_used', '?')}    Remaining: {data.get('free_remaining', '?')}",
+        f"Balance: {data.get('balance', '?')} {data.get('currency', '')}",
     ]
     buy = data.get("buy_url")
     if buy:
-        lines.append(f"购买额度：{buy}")
-    lines.append("规则：按 UTC 日切重置，每日固定额度，不累积、不跨日结转。")
+        lines.append(f"Buy credits: {buy}")
+    lines.append("Rule: resets on a UTC day boundary; fixed daily amount, no accumulation or rollover.")
     return lines
 
 
 def onboarding_lines(config):
-    """无 Key / 鉴权失败时的注册引导：引流的落地话术，不含任何凭据。"""
+    """Registration guidance for missing/failed auth: no credentials included."""
     base = config["api_base"]
     return [
         "------------------------------------------------------------",
-        "首次使用请先注册并获取 API Key（免费额度当日可领）：",
-        f"  1) 打开网站注册：{SITE_URL}",
-        f"     （服务基址：{base}）",
-        "  2) 注册后确认邮箱 → 进入「账户与额度 / 开发者」栏目 → 生成 API Key；",
-        "  3) 把 Key 写入环境变量 XRD_API_KEY，或配置文件 ~/.config/xrd-cif/config.json；",
-        "  4) 重新运行 doctor 自检，然后即可用 search 检索。",
-        "每日有免费解析额度，用尽后 402 响应会给出购买链接；本客户端不处理支付。",
+        "First time here? Register to get an API key (free daily allowance):",
+        f"  1) Open {SITE_URL} to register",
+        f"     (service base URL: {base})",
+        "  2) Confirm your email, then go to Account & Credits > Developer to generate an API key;",
+        "  3) Set XRD_API_KEY, or write the key to ~/.config/xrd-cif/config.json;",
+        "  4) Re-run doctor to self-check, then use search to retrieve.",
+        "Daily free analyses are available; once used up, a 402 response includes the purchase link. No payment is handled here.",
         "------------------------------------------------------------",
     ]
 
 
 def doctor_lines(payload, config):
     lines = [
-        "== 自检 doctor ==",
-        f"服务基址：{config['api_base']}",
-        "连通性：正常",
+        "== Self-check (doctor) ==",
+        f"Service base URL: {config['api_base']}",
+        "Connectivity: OK",
     ]
     if config["api_key"]:
-        lines.append("API Key：已配置，请求已携带 X-API-Key 头（值不显示 / value hidden）")
-        lines.append("鉴权结果：服务端接受该凭据")
+        lines.append("API key: configured, X-API-Key header sent (value hidden)")
+        lines.append("Auth result: server accepted the credential")
         lines.append("")
         lines.extend(quota_lines(payload))
     else:
-        lines.append("API Key：未配置（XRD_API_KEY 与配置文件均为空）")
-        lines.append("提示：服务端要求有效 API Key，匿名访问会被拒绝。")
+        lines.append("API key: not configured (XRD_API_KEY and config file are both empty)")
+        lines.append("Note: the server requires a valid API key; anonymous access is rejected.")
         lines.extend(onboarding_lines(config))
     return lines
 
@@ -316,55 +317,55 @@ def scalar(value):
 
 def search_lines(payload):
     data = payload if isinstance(payload, dict) else {}
-    lines = ["== 检索结果 =="]
+    lines = ["== Retrieval result =="]
     if data.get("history_id"):
-        lines.append(f"history_id：{data['history_id']}")
+        lines.append(f"history_id: {data['history_id']}")
 
     result = data.get("result")
     if isinstance(result, dict):
         if result.get("decision") is not None:
-            lines.append(f"三态结论 decision：{scalar(result['decision'])}")
+            lines.append(f"three-state decision: {scalar(result['decision'])}")
         candidates = result.get("candidates")
         if isinstance(candidates, list):
-            lines.append(f"候选结构 Top-{len(candidates)}：")
+            lines.append(f"Top-{len(candidates)} candidates:")
             for idx, item in enumerate(candidates, 1):
                 lines.append(format_candidate(idx, item))
         elif candidates is not None:
-            lines.append(f"candidates：{compact(candidates)}")
+            lines.append(f"candidates: {compact(candidates)}")
         if result.get("meta"):
-            lines.append(f"meta：{compact(result['meta'])}")
+            lines.append(f"meta: {compact(result['meta'])}")
         if result.get("pattern"):
-            lines.append(f"回显 pattern：{compact(result['pattern'])}")
+            lines.append(f"echoed pattern: {compact(result['pattern'])}")
 
     billing = data.get("billing")
     if isinstance(billing, dict):
         lines.append(
-            f"本次计费：credits={billing.get('credits', '?')}"
-            f"（0=免费额度 / 1=付费额度），计费后余额={billing.get('balance_after', '?')}"
+            f"billing: credits={billing.get('credits', '?')}"
+            f" (0=daily free / 1=paid), balance after={billing.get('balance_after', '?')}"
         )
     quota = data.get("quota")
     if isinstance(quota, dict):
         lines.append(
-            f"额度：免费剩余 {quota.get('free_remaining', '?')}，"
-            f"来源 {quota.get('source', '?')}"
+            f"quota: free remaining {quota.get('free_remaining', '?')},"
+            f" source {quota.get('source', '?')}"
         )
         buy = quota.get("buy_url") or data.get("buy_url")
         if buy:
-            lines.append(f"购买额度：{buy}")
-    lines.append("提示：用 history --history-id 读取逐候选 verification 与 render 证据。")
+            lines.append(f"Buy credits: {buy}")
+    lines.append("Tip: use history --history-id to read per-candidate verification and render evidence.")
     return lines
 
 
 def read_text_file(path, label):
     if not path:
-        raise UsageError(f"该 pattern-kind 必须提供 {label}")
+        raise UsageError(f"This pattern-kind requires {label}")
     target = Path(path)
     if not target.is_file():
-        raise UsageError(f"找不到{label}：{path}")
+        raise UsageError(f"Cannot find {label}: {path}")
     try:
         return target.read_text(encoding="utf-8")
     except OSError as exc:
-        raise UsageError(f"无法读取{label} {path}：{type(exc).__name__}") from exc
+        raise UsageError(f"Cannot read {label} {path}: {type(exc).__name__}") from exc
 
 
 def build_pattern(args):
@@ -376,10 +377,10 @@ def build_pattern(args):
             "condition": args.condition or "clean",
         }
     if kind == "peaks":
-        return {"kind": "peaks", "text": read_text_file(args.peaks_file, "峰表文件 --peaks-file")}
+        return {"kind": "peaks", "text": read_text_file(args.peaks_file, "peak-table file --peaks-file")}
     if kind == "xy":
-        return {"kind": "xy", "text": read_text_file(args.xy_file, "连续谱文件 --xy-file")}
-    raise UsageError(f"不支持的 --pattern-kind：{kind}")
+        return {"kind": "xy", "text": read_text_file(args.xy_file, "pattern file --xy-file")}
+    raise UsageError(f"Unsupported --pattern-kind: {kind}")
 
 
 def emit(payload, as_json, lines):
@@ -391,35 +392,35 @@ def emit(payload, as_json, lines):
 
 
 def print_402(payload, stream):
-    """醒目打印购买链接与剩余额度，明确绝不伪造结果。"""
+    """Prominently print the purchase link and remaining quota; never fabricate results."""
     data = payload if isinstance(payload, dict) else {}
     quota = data.get("quota") if isinstance(data.get("quota"), dict) else {}
-    buy = data.get("buy_url") or quota.get("buy_url") or "（服务端未提供购买链接）"
+    buy = data.get("buy_url") or quota.get("buy_url") or "(no purchase link provided by server)"
     free = quota.get("free_remaining", data.get("free_remaining", "?"))
     day = quota.get("day_utc", "?")
     source = quota.get("source", "?")
     print("", file=stream)
     print("============================================================", file=stream)
-    print("额度不足：每日免费额度已用尽，且账户余额为 0。", file=stream)
-    print(f"  当日 UTC：{day}    免费剩余：{free}    计费来源：{source}", file=stream)
-    print(f"  购买解析额度：{buy}", file=stream)
-    print("请到上述链接购买额度后重试。", file=stream)
-    print("本次未产生检索结果，客户端不会伪造或缓存任何结果。/ No results fabricated.", file=stream)
+    print("Out of credits: daily free allowance exhausted and balance is 0.", file=stream)
+    print(f"  UTC date: {day}    Free remaining: {free}    Billing source: {source}", file=stream)
+    print(f"  Buy analysis credits: {buy}", file=stream)
+    print("Purchase credits at the link above, then retry.", file=stream)
+    print("No result was produced. No results are fabricated or cached. / No results fabricated.", file=stream)
     print("============================================================", file=stream)
 
 
 SPECIFIC = {
-    403: (EXIT_403, "越权访问，当前凭据无权调用该资源。"),
-    409: (EXIT_409, "request_id 重复，请更换 --request-id 后重试。"),
-    429: (EXIT_429, "请求被限流，请稍后重试。"),
+    403: (EXIT_403, "Forbidden: this credential cannot access the resource."),
+    409: (EXIT_409, "request_id already used; change --request-id and retry."),
+    429: (EXIT_429, "Rate limited; please retry later."),
 }
 
 
 def handle_error(exc, as_json, config=None):
-    """统一处理错误：非零退出码、402 醒目提示、绝不静默失败。"""
+    """Uniform error handling: non-zero exit codes, prominent 402, never fail silently."""
     if exc.status == 401:
         cfg = config or {"api_base": DEFAULT_BASE, "api_key": ""}
-        print("[错误 401] API Key 缺失、无效或已撤销。", file=sys.stderr)
+        print("[Error 401] API key missing, invalid, or revoked.", file=sys.stderr)
         stream = sys.stderr
         for line in onboarding_lines(cfg):
             print(line, file=stream)
@@ -435,20 +436,21 @@ def handle_error(exc, as_json, config=None):
     if exc.status == 403:
         code = exc.payload.get("code") if isinstance(exc.payload, dict) else None
         if code == "email_unverified":
-            print("[错误 403] 该 Token 所属账户尚未完成邮箱确认：请到注册邮箱点击确认链接，"
-                  "或登录网站账户页重新发送确认邮件后再试。", file=sys.stderr)
+            print("[Error 403] The account owning this token has not confirmed its email. "
+                  "Click the confirmation link in your registration email, or resend it from "
+                  "the account page on the website, then retry.", file=sys.stderr)
             return EXIT_403
     if exc.status in SPECIFIC:
         code, hint = SPECIFIC[exc.status]
-        print(f"[错误 {exc.status}] {hint} 详情：{exc.message}", file=sys.stderr)
+        print(f"[Error {exc.status}] {hint} Details: {exc.message}", file=sys.stderr)
         return code
     if exc.status == 0:
-        print(f"[网络错误] {exc.message}", file=sys.stderr)
+        print(f"[Network error] {exc.message}", file=sys.stderr)
         return EXIT_NETWORK
     if exc.status == -1:
-        print(f"[响应错误] {exc.message}", file=sys.stderr)
+        print(f"[Response error] {exc.message}", file=sys.stderr)
         return EXIT_BAD_RESPONSE
-    print(f"[服务错误 {exc.status}] {exc.message}", file=sys.stderr)
+    print(f"[Server error {exc.status}] {exc.message}", file=sys.stderr)
     return EXIT_HTTP
 
 
@@ -463,8 +465,8 @@ def dispatch(args, config):
         emit(payload, args.as_json, human_lines(payload))
         return EXIT_OK
     if args.command == "doctor":
-        # 无 Key 时打 v1 配额接口只会拿到 401，无法自检连通性。
-        # 先探测公开的 health 端点确认服务可达，再按是否配置 Key 分支输出。
+        # With no key, the v1 quota endpoint only returns 401 and cannot check connectivity.
+        # Probe the public health endpoint first, then branch on whether a key is configured.
         payload = api_get(HEALTH_PATH, config, timeout)
         if not config["api_key"]:
             lines = doctor_lines({"status": "ok"}, config)
@@ -499,48 +501,48 @@ def dispatch(args, config):
         payload = api_get(f"/api/v1/history/{hid}", config, timeout)
         emit(payload, args.as_json, human_lines(payload))
         return EXIT_OK
-    raise UsageError(f"未知子命令：{args.command}")
+    raise UsageError(f"Unknown command: {args.command}")
 
 
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="xrd_client.py",
-        description="XRD-CIF 跨模态晶体检索服务命令行客户端（纯标准库）",
+        description="CLI client for the XRD-CIF cross-modal crystal retrieval service (standard library only)",
     )
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--json", action="store_true", dest="as_json",
-        help="输出原始 JSON；默认输出人类可读摘要",
+        help="Output raw JSON; default is a human-readable summary",
     )
     common.add_argument(
         "--timeout", type=float, default=DEFAULT_TIMEOUT,
-        help=f"请求超时秒数（默认 {DEFAULT_TIMEOUT}）",
+        help=f"Request timeout in seconds (default {DEFAULT_TIMEOUT})",
     )
-    sub = parser.add_subparsers(dest="command", required=True, metavar="子命令")
+    sub = parser.add_subparsers(dest="command", required=True, metavar="command")
 
-    sub.add_parser("quota", parents=[common], help="查询当日免费额度与账户余额")
-    sub.add_parser("account", parents=[common], help="查询账户与账本流水摘要")
-    sub.add_parser("doctor", parents=[common], help="自检连通性与 API Key")
+    sub.add_parser("quota", parents=[common], help="Show daily free allowance and balance")
+    sub.add_parser("account", parents=[common], help="Show account and ledger summary")
+    sub.add_parser("doctor", parents=[common], help="Check connectivity and API key")
 
-    p_search = sub.add_parser("search", parents=[common], help="衍射谱检索 Top-K 候选结构")
+    p_search = sub.add_parser("search", parents=[common], help="Pattern search for Top-K candidates")
     p_search.add_argument("--pattern-kind", choices=["simulate", "peaks", "xy"],
-                          default="simulate", help="衍射谱输入类型（默认 simulate）")
+                          default="simulate", help="Pattern input type (default simulate)")
     p_search.add_argument("--structure-id", default="NaCl-rocksalt",
-                          help="simulate 使用的结构 ID")
+                          help="Structure ID used by simulate")
     p_search.add_argument("--condition", default="clean",
-                          help="simulate 使用的条件")
-    p_search.add_argument("--peaks-file", help="peaks 模式的 2θ 与相对强度峰表文件")
-    p_search.add_argument("--xy-file", help="xy 模式的连续谱文本文件")
-    p_search.add_argument("--k", type=int, default=5, help="返回候选数量（默认 5）")
+                          help="Condition used by simulate")
+    p_search.add_argument("--peaks-file", help="Peak-table file (2θ and relative intensity) for peaks mode")
+    p_search.add_argument("--xy-file", help="Continuous-pattern text file for xy mode")
+    p_search.add_argument("--k", type=int, default=5, help="Number of candidates (default 5)")
     p_search.add_argument("--request-id", default=None,
-                          help="幂等请求 ID；缺省自动生成 UUID")
+                          help="Idempotency request ID; a UUID is generated if omitted")
 
-    p_reverse = sub.add_parser("reverse", parents=[common], help="由 CIF 结构反查理论衍射谱")
-    p_reverse.add_argument("--structure-id", default="NaCl-rocksalt", help="CIF 结构 ID")
-    p_reverse.add_argument("--k", type=int, default=3, help="返回命中数量（默认 3）")
+    p_reverse = sub.add_parser("reverse", parents=[common], help="CIF structure → theoretical pattern")
+    p_reverse.add_argument("--structure-id", default="NaCl-rocksalt", help="CIF structure ID")
+    p_reverse.add_argument("--k", type=int, default=3, help="Number of matches (default 3)")
 
-    p_history = sub.add_parser("history", parents=[common], help="读取完整结果与证据")
-    p_history.add_argument("--history-id", required=True, help="search 返回的 history_id")
+    p_history = sub.add_parser("history", parents=[common], help="Read full result and evidence")
+    p_history.add_argument("--history-id", required=True, help="history_id returned by search")
 
     return parser
 
@@ -551,12 +553,12 @@ def main(argv=None):
     try:
         return dispatch(args, config)
     except UsageError as exc:
-        print(f"[参数错误] {exc}", file=sys.stderr)
+        print(f"[Argument error] {exc}", file=sys.stderr)
         return EXIT_USAGE
     except ApiError as exc:
         return handle_error(exc, args.as_json, config)
-    except Exception as exc:  # 兜底：避免堆栈回显可能携带的凭据
-        print(f"[错误] 未预期异常：{type(exc).__name__}", file=sys.stderr)
+    except Exception as exc:  # Catch-all: avoid a traceback that might leak credentials
+        print(f"[Error] Unexpected exception: {type(exc).__name__}", file=sys.stderr)
         return EXIT_HTTP
 
 
